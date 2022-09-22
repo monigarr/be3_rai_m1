@@ -100,7 +100,7 @@ links.new(bpy.data.materials["body"].node_tree.nodes["Bright/Contrast"].outputs[
 #------------------------------------------
 #
 # render new image of boeing with each camo texture
-# save each render in current directory/CamoMats/HourRendered/...renderedimagefiles.png
+# save each render in current directory/CamoMats/HourRendered/...renderedimagefiles.jpg
 # 
 #------------------------------------------
 
