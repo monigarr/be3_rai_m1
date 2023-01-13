@@ -3,8 +3,7 @@
 <!-- ABOUT THE PROJECT -->
 ## Skills Assessment
 
-This is a private repo for the purpose of a Skills Assessment.
-Do Not Make this a public repo.
+This is a repo for the purpose of a Skills Assessment.
 
 
 <!-- CONTACT -->

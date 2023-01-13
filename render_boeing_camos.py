@@ -3,12 +3,9 @@ from datetime import datetime
 
 #-------------------------------------------------------------------------------------------
 #
-#   Rendered.ai Interview Test for Technical Artist
+#   Interview Test for Technical Artist
 #
-#   MoniGarr (Monica Peters),  monigarr@MoniGarr.com,  650-201-2417     MoniGarr.com
-#
-#   Received from Rendered.ai:  9/20/2022       
-#   Completed & Sent Back to Rendered.ai: 9/21/2022
+#   MoniGarr,  monigarr@MoniGarr.com,  MoniGarr.com
 #
 #
 #   (i) Use “blender Boeing_E3.blend --background --python scriptname.py” from the command line to call the script.
@@ -24,7 +21,7 @@ from datetime import datetime
 #   (iv) Generate 10 renders of the aircraft, each with a new color and pattern of camouflage. 
 #
 #
-#	MoniGarr's WorkStation:
+#	PC WorkStation:
 #		Omniverse Launcher
 #		Blender 3.4.0-usd.101.0
 #		msi gtx 1660, windows 10
