@@ -1,5 +1,43 @@
-import bpy, os, time
+"""
+Render Boeing E-3 camouflage variants in Blender.
+
+This script is designed to be run *inside Blender* (i.e. with access to `bpy`).
+It loads camouflage textures from `CamoMats/`, applies them to the aircraft's
+`body` and `wings` materials, and writes still renders to disk.
+
+## CLI usage (recommended)
+
+From the repository root (same folder as `Boeing_E3.blend`):
+
+    blender "Boeing_E3.blend" --background --python "render_boeing_camos.py" -- \\
+      --mats-dir "CamoMats" \\
+      --output-dir "CamoMats/Rendered" \\
+      --limit 10
+
+Notes:
+- Arguments after `--` are passed to this script (Blender consumes earlier args).
+- Output images are written as `.jpg` files.
+
+## Public API
+
+- `main(argv: list[str] | None = None) -> int`
+- `render_camo_variants(...) -> list[str]`
+- `setup_scene_camera_sun(...) -> None`
+- `ensure_camo_material_nodes(...) -> None`
+
+See `docs/API.md` for detailed API documentation and examples.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import time
+from dataclasses import dataclass
 from datetime import datetime
+from typing import Iterable, Optional
+
+import bpy
 
 #-------------------------------------------------------------------------------------------
 #
@@ -51,6 +89,311 @@ from datetime import datetime
 #
 #--------------------------------------------------------------------------------------------------------
 
+@dataclass(frozen=True)
+class RenderConfig:
+    """Configuration for rendering camouflage variants."""
+
+    mats_dir: str
+    output_dir: str
+    limit: Optional[int] = 10
+    sleep_seconds: float = 1.0
+
+    # Scene/model identifiers (must match the provided .blend).
+    aircraft_object_name: str = "Boeing_E3"
+    scene_name: str = "Scene"
+    camera_name: str = "Camera"
+
+    # Materials to modify (only these are modified).
+    body_material_name: str = "body"
+    wings_material_name: str = "wings"
+
+
+def _ensure_dir(path: str) -> None:
+    os.makedirs(path, exist_ok=True)
+
+
+def _iter_png_files(directory: str) -> Iterable[str]:
+    for filename in sorted(os.listdir(directory)):
+        if filename.lower().endswith(".png"):
+            yield os.path.join(directory, filename)
+
+
+def _require_object(name: str) -> bpy.types.Object:
+    obj = bpy.data.objects.get(name)
+    if obj is None:
+        raise RuntimeError(f"Required object not found: {name!r}")
+    return obj
+
+
+def _require_scene(name: str) -> bpy.types.Scene:
+    scene = bpy.data.scenes.get(name)
+    if scene is None:
+        raise RuntimeError(f"Required scene not found: {name!r}")
+    return scene
+
+
+def _require_material(name: str) -> bpy.types.Material:
+    mat = bpy.data.materials.get(name)
+    if mat is None:
+        raise RuntimeError(f"Required material not found: {name!r}")
+    return mat
+
+
+def setup_scene_camera_sun(
+    *,
+    aircraft_object_name: str = "Boeing_E3",
+    scene_name: str = "Scene",
+    camera_name: str = "Camera",
+) -> None:
+    """
+    Ensure a camera and sun exist and frame the aircraft.
+
+    This mirrors the original assessment script behavior:
+    - selects the aircraft
+    - adds a SUN light
+    - adds a camera and sets it as the active scene camera
+    - frames the camera to the selected aircraft
+    """
+    aircraft = _require_object(aircraft_object_name)
+    scene = _require_scene(scene_name)
+
+    # Select aircraft for framing.
+    aircraft.select_set(True)
+
+    bpy.ops.object.light_add(type="SUN")
+    bpy.ops.object.camera_add()
+
+    cam = bpy.data.objects.get(camera_name)
+    if cam is None:
+        raise RuntimeError(
+            f"Camera object {camera_name!r} not found after creation."
+        )
+    scene.camera = cam
+
+    # Frame camera to aircraft (requires a 3D view context; works in many headless runs,
+    # but may fail depending on Blender context).
+    try:
+        bpy.ops.view3d.camera_to_view_selected()
+    except Exception:
+        # If context isn't available, we keep the created camera and proceed.
+        pass
+
+
+def _find_principled_node(nodes: bpy.types.Nodes, preferred_name: str | None = None):
+    if preferred_name and preferred_name in nodes:
+        return nodes[preferred_name]
+    for node in nodes:
+        if node.type == "BSDF_PRINCIPLED":
+            return node
+    return None
+
+
+def ensure_camo_material_nodes(
+    *,
+    body_material_name: str = "body",
+    wings_material_name: str = "wings",
+    wings_principled_node_name: str = "Principled BSDF.001",
+    body_principled_node_name: str = "Principled BSDF",
+) -> None:
+    """
+    Ensure `body` and `wings` materials are set up to accept an image texture.
+
+    The graph created/ensured is:
+        Image Texture (Color) -> Bright/Contrast (Color) -> Principled BSDF (Base Color)
+
+    Only the `body` and `wings` materials are modified.
+    """
+    for mat_name, principled_name in [
+        (wings_material_name, wings_principled_node_name),
+        (body_material_name, body_principled_node_name),
+    ]:
+        mat = _require_material(mat_name)
+        mat.use_nodes = True
+        nodes = mat.node_tree.nodes
+        links = mat.node_tree.links
+
+        tex = nodes.get("Image Texture")
+        if tex is None:
+            tex = nodes.new(type="ShaderNodeTexImage")
+            tex.name = "Image Texture"
+            tex.label = "Image Texture"
+
+        bc = nodes.get("Bright/Contrast")
+        if bc is None:
+            bc = nodes.new(type="ShaderNodeBrightContrast")
+            bc.name = "Bright/Contrast"
+            bc.label = "Bright/Contrast"
+
+        principled = _find_principled_node(nodes, preferred_name=principled_name)
+        if principled is None:
+            raise RuntimeError(
+                f"Could not find a Principled BSDF node in material {mat_name!r}."
+            )
+
+        # Link (idempotent-ish): make sure the expected links exist.
+        def _link(out_socket, in_socket):
+            for l in links:
+                if l.from_socket == out_socket and l.to_socket == in_socket:
+                    return
+            links.new(out_socket, in_socket)
+
+        _link(tex.outputs[0], bc.inputs[0])
+        _link(bc.outputs[0], principled.inputs[0])
+
+
+def render_camo_variants(
+    *,
+    mats_dir: str,
+    output_dir: str,
+    limit: Optional[int] = 10,
+    sleep_seconds: float = 1.0,
+    aircraft_object_name: str = "Boeing_E3",
+    body_material_name: str = "body",
+    wings_material_name: str = "wings",
+) -> list[str]:
+    """
+    Render camouflage variants from `.png` textures in `mats_dir`.
+
+    Parameters:
+    - `mats_dir`: Directory containing `.png` camouflage textures.
+    - `output_dir`: Output directory for rendered `.jpg` stills.
+    - `limit`: Maximum number of renders. Use `None` to render all textures.
+    - `sleep_seconds`: Optional delay between renders (useful for debugging/IO pacing).
+
+    Returns:
+    - A list of written image file paths.
+    """
+    mats_dir = os.path.abspath(mats_dir)
+    output_dir = os.path.abspath(output_dir)
+    _ensure_dir(output_dir)
+
+    _require_object(aircraft_object_name).select_set(True)
+    body = _require_material(body_material_name)
+    wings = _require_material(wings_material_name)
+
+    written: list[str] = []
+    rendered = 0
+
+    for image_filepath in _iter_png_files(mats_dir):
+        if limit is not None and rendered >= limit:
+            break
+
+        # Load texture image and assign to both materials.
+        img = bpy.data.images.load(image_filepath, check_existing=True)
+        body.node_tree.nodes["Image Texture"].image = img
+        wings.node_tree.nodes["Image Texture"].image = img
+
+        base_name = os.path.splitext(os.path.basename(image_filepath))[0]
+        out_path = os.path.join(output_dir, f"{base_name}_render.jpg")
+        bpy.context.scene.render.filepath = out_path
+        bpy.ops.render.render(write_still=True)
+
+        written.append(out_path)
+        rendered += 1
+
+        if sleep_seconds:
+            time.sleep(sleep_seconds)
+
+    return written
+
+
+def _parse_args(argv: list[str]) -> RenderConfig:
+    """
+    Parse CLI args after Blender's `--`.
+
+    Example:
+        blender file.blend --background --python render_boeing_camos.py -- --limit 10
+    """
+    parser = argparse.ArgumentParser(
+        prog="render_boeing_camos.py",
+        description="Render Boeing E-3 camouflage variants in Blender.",
+    )
+    parser.add_argument(
+        "--mats-dir",
+        default="CamoMats",
+        help="Directory containing .png camouflage textures (default: CamoMats).",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help=(
+            "Directory to write rendered .jpg files (default: "
+            "CamoMats/Rendered_<HHMM>/)."
+        ),
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=10,
+        help="Maximum number of renders (default: 10). Use 0 to render all.",
+    )
+    parser.add_argument(
+        "--sleep-seconds",
+        type=float,
+        default=1.0,
+        help="Delay between renders (default: 1.0).",
+    )
+
+    ns = parser.parse_args(argv)
+
+    now = datetime.now()
+    time_stamp = now.strftime("%H%M")
+
+    mats_dir = ns.mats_dir
+    output_dir = (
+        ns.output_dir
+        if ns.output_dir
+        else os.path.join(mats_dir, f"Rendered_{time_stamp}")
+    )
+    limit = None if ns.limit == 0 else ns.limit
+
+    return RenderConfig(
+        mats_dir=mats_dir,
+        output_dir=output_dir,
+        limit=limit,
+        sleep_seconds=ns.sleep_seconds,
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    """
+    Script entrypoint for Blender `--python`.
+
+    `argv` should contain only arguments after Blender's `--` separator.
+    When run as a script, this function automatically extracts those args.
+    """
+    if argv is None:
+        argv = []
+        if "--" in os.sys.argv:
+            argv = os.sys.argv[os.sys.argv.index("--") + 1 :]
+
+    cfg = _parse_args(argv)
+
+    # Setup scene and materials.
+    setup_scene_camera_sun(
+        aircraft_object_name=cfg.aircraft_object_name,
+        scene_name=cfg.scene_name,
+        camera_name=cfg.camera_name,
+    )
+    ensure_camo_material_nodes(
+        body_material_name=cfg.body_material_name,
+        wings_material_name=cfg.wings_material_name,
+    )
+
+    # Render.
+    written = render_camo_variants(
+        mats_dir=cfg.mats_dir,
+        output_dir=cfg.output_dir,
+        limit=cfg.limit,
+        sleep_seconds=cfg.sleep_seconds,
+        aircraft_object_name=cfg.aircraft_object_name,
+        body_material_name=cfg.body_material_name,
+        wings_material_name=cfg.wings_material_name,
+    )
+
+    print(f"Rendered {len(written)} image(s) to: {os.path.abspath(cfg.output_dir)}")
+    return 0
+
 
 #------------------------------------------
 #
@@ -58,64 +401,5 @@ from datetime import datetime
 #	directories, scene, camera, lights
 # 
 #------------------------------------------
-curr_dir = os.getcwd()
-mats_dir = curr_dir + "/CamoMats"
-rendered_dir = curr_dir + "/BoeingRenders/"
-now = datetime.now()
-time_stamp = now.strftime("%H%M")
-
-# scene, camera, sun, model
-bpy.data.objects["Boeing_E3"].select_set(True)
-bpy.ops.object.light_add(type='SUN')
-bpy.ops.object.camera_add()
-bpy.data.objects["Boeing_E3"].select_set(True)
-bpy.data.scenes["Scene"].camera = bpy.data.objects["Camera"]
-bpy.ops.view3d.camera_to_view_selected()
-
-# use nodes
-bpy.data.materials["wings"].use_nodes = True
-bpy.data.materials["body"].use_nodes = True
-
-# new node materials
-#bpy.data.images["awacs_wings_dif_light.jpg"].name
-#bpy.data.images["awacs_body_dif.jpg"].name
-wings_TexImageNode = bpy.data.materials["wings"].node_tree.nodes.new(type = 'ShaderNodeTexImage')
-wings_BrightContrastNode = bpy.data.materials["wings"].node_tree.nodes.new(type = 'ShaderNodeBrightContrast')
-body_wings_TexImageNode = bpy.data.materials["body"].node_tree.nodes.new(type = 'ShaderNodeTexImage')
-body_BrightContrastNode = bpy.data.materials["body"].node_tree.nodes.new(type = 'ShaderNodeBrightContrast')
-
-# link node wings materials
-links = bpy.data.materials["wings"].node_tree.links
-links.new(bpy.data.materials["wings"].node_tree.nodes["Image Texture"].outputs[0],bpy.data.materials["wings"].node_tree.nodes["Bright/Contrast"].inputs[0])
-links.new(bpy.data.materials["wings"].node_tree.nodes["Bright/Contrast"].outputs[0], bpy.data.materials["wings"].node_tree.nodes["Principled BSDF.001"].inputs[0])
-#bpy.data.materials["wings"].node_tree.nodes["Bright/Contrast"].inputs[1].default_value = -0.2
-
-# link node body materials
-links.new(bpy.data.materials["body"].node_tree.nodes["Image Texture"].outputs[0], bpy.data.materials["body"].node_tree.nodes["Bright/Contrast"].inputs[0])
-links.new(bpy.data.materials["body"].node_tree.nodes["Bright/Contrast"].outputs[0], bpy.data.materials["body"].node_tree.nodes["Principled BSDF"].inputs[0])
-
-#------------------------------------------
-#
-# render new image of boeing with each camo texture
-# save each render in current directory/CamoMats/HourRendered/...renderedimagefiles.jpg
-# 
-#------------------------------------------
-
-i = 0
-
-for filename in os.listdir(mats_dir):
-    if filename.endswith(".png"):
-        image_filepath = os.path.join(mats_dir,filename)
-        rendered_filepath = os.path.join(mats_dir + "/Rendered_" + time_stamp + "/", filename)
-        
-        bpy.data.objects["Boeing_E3"].select_set(True)
-        bpy.data.materials["body"].node_tree.nodes['Image Texture'].image = bpy.data.images.load(image_filepath)
-        bpy.data.materials["wings"].node_tree.nodes['Image Texture'].image = bpy.data.images.load(image_filepath)
-        print("New Boeing Camo Rendered")        
-        
-        #save each render image to current directory/CamoMats/Rendered
-        bpy.context.scene.render.filepath = rendered_filepath[:-4] + "_render.jpg"
-        bpy.ops.render.render(write_still = True)  
-     
-        i+=1              
-        time.sleep(1)
+if __name__ == "__main__":
+    raise SystemExit(main())
