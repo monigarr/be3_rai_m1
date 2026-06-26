@@ -77,14 +77,30 @@ blender "Boeing_E3.blend" --background --python "render_boeing_camos.py" -- \
 
 ## Troubleshooting
 
-### “Required object/material not found”
+### “Required object not found”
 
-The script expects these names to exist in the loaded scene:
+The script expects the aircraft object `Boeing_E3` (and `Scene`) to exist in the loaded
+`.blend`. If your `.blend` uses different names, call the Python API with custom names
+(see `docs/API.md`).
 
-- Aircraft object: `Boeing_E3`
-- Materials: `body`, `wings`
+### Materials (`body` / `wings`)
 
-If your `.blend` uses different names, you can either rename them in Blender or call the Python API with custom names (see `docs/API.md`).
+The script applies the camouflage to the `body` and `wings` materials. Any of these material
+names that are **not present** in the loaded `.blend` are skipped with a notice such as:
+
+```
+[render_boeing_camos] Skipping missing material: 'body'
+```
+
+The bundled `Boeing_E3.blend` shares a **single `wings` material for the fuselage body and the
+wings** (it has no separate `body` material), so a normal run prints the notice above and applies
+the camo via `wings` only. A `RuntimeError` is raised only if **none** of the configured camo
+materials exist.
+
+> Note: if you run the copy of this script that is saved *inside* `Boeing_E3.blend`
+> (Blender's Text Editor), use the on-disk `render_boeing_camos.py` instead — the embedded
+> copy is older and assumes a separate `body` material exists, so it fails with
+> `KeyError: ... key "body" not found`.
 
 ### Camera framing doesn’t work in headless mode
 

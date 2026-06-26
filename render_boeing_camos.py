@@ -132,13 +132,6 @@ def _require_scene(name: str) -> bpy.types.Scene:
     return scene
 
 
-def _require_material(name: str) -> bpy.types.Material:
-    mat = bpy.data.materials.get(name)
-    if mat is None:
-        raise RuntimeError(f"Required material not found: {name!r}")
-    return mat
-
-
 def setup_scene_camera_sun(
     *,
     aircraft_object_name: str = "Boeing_E3",
@@ -201,13 +194,22 @@ def ensure_camo_material_nodes(
     The graph created/ensured is:
         Image Texture (Color) -> Bright/Contrast (Color) -> Principled BSDF (Base Color)
 
-    Only the `body` and `wings` materials are modified.
+    Only the `body` and `wings` materials are modified. Materials that do not
+    exist in the loaded `.blend` are skipped with a notice (some Boeing E-3
+    `.blend` files share a single `wings` material for both the fuselage body
+    and the wings, and therefore have no separate `body` material). A
+    `RuntimeError` is raised only if none of the requested materials exist.
     """
+    processed = 0
     for mat_name, principled_name in [
         (wings_material_name, wings_principled_node_name),
         (body_material_name, body_principled_node_name),
     ]:
-        mat = _require_material(mat_name)
+        mat = bpy.data.materials.get(mat_name)
+        if mat is None:
+            print(f"[render_boeing_camos] Skipping missing material: {mat_name!r}")
+            continue
+        processed += 1
         mat.use_nodes = True
         nodes = mat.node_tree.nodes
         links = mat.node_tree.links
@@ -240,6 +242,12 @@ def ensure_camo_material_nodes(
         _link(tex.outputs[0], bc.inputs[0])
         _link(bc.outputs[0], principled.inputs[0])
 
+    if processed == 0:
+        raise RuntimeError(
+            "None of the configured camo materials were found: "
+            f"{body_material_name!r}, {wings_material_name!r}."
+        )
+
 
 def render_camo_variants(
     *,
@@ -268,8 +276,22 @@ def render_camo_variants(
     _ensure_dir(output_dir)
 
     _require_object(aircraft_object_name).select_set(True)
-    body = _require_material(body_material_name)
-    wings = _require_material(wings_material_name)
+
+    # Some Boeing E-3 .blend files share a single `wings` material for both the
+    # fuselage body and the wings (no separate `body` material). Only assign the
+    # texture to the configured materials that actually exist.
+    target_materials: list[bpy.types.Material] = []
+    for name in (body_material_name, wings_material_name):
+        mat = bpy.data.materials.get(name)
+        if mat is None:
+            print(f"[render_boeing_camos] Skipping missing material: {name!r}")
+            continue
+        target_materials.append(mat)
+    if not target_materials:
+        raise RuntimeError(
+            "None of the configured camo materials were found: "
+            f"{body_material_name!r}, {wings_material_name!r}."
+        )
 
     written: list[str] = []
     rendered = 0
@@ -278,10 +300,10 @@ def render_camo_variants(
         if limit is not None and rendered >= limit:
             break
 
-        # Load texture image and assign to both materials.
+        # Load texture image and assign to each existing target material.
         img = bpy.data.images.load(image_filepath, check_existing=True)
-        body.node_tree.nodes["Image Texture"].image = img
-        wings.node_tree.nodes["Image Texture"].image = img
+        for mat in target_materials:
+            mat.node_tree.nodes["Image Texture"].image = img
 
         base_name = os.path.splitext(os.path.basename(image_filepath))[0]
         out_path = os.path.join(output_dir, f"{base_name}_render.jpg")

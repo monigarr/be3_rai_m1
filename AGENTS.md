@@ -24,23 +24,21 @@ linter config, and no Python package manifest. The only runtime dependency is Bl
   xvfb-run -a blender "Boeing_E3.blend" --background --python "render_boeing_camos.py" -- --limit 2 --sleep-seconds 0
   ```
 
-- **Repo data gotcha:** the bundled `Boeing_E3.blend` has **no `body` material** (its mesh
-  uses `dome, engines, glass, landing_gear_door, landing_gears, propeller_cap, propellers,
-  tires, wings`). The documented default CLI requires a `body` material and therefore fails with
-  `RuntimeError: Required material not found: 'body'`. To run end-to-end against this blend, use
-  the documented Python API (see `docs/API.md`) with material names that exist, e.g. `wings`
-  (which has node `Principled BSDF.001`) and `engines`:
-
-  ```python
-  import render_boeing_camos as rbc
-  rbc.setup_scene_camera_sun()
-  rbc.ensure_camo_material_nodes(body_material_name="engines", wings_material_name="wings")
-  rbc.render_camo_variants(mats_dir="CamoMats", output_dir="CamoMats/Rendered_demo",
-                           limit=2, sleep_seconds=0,
-                           body_material_name="engines", wings_material_name="wings")
-  ```
-
-  Run such a driver with `xvfb-run -a blender "Boeing_E3.blend" --background --python <driver>.py`.
+- **Repo data gotcha (`body` material):** the bundled `Boeing_E3.blend` has **no separate
+  `body` material**. A material-ID render shows the `wings` material actually covers the
+  **fuselage body + wings + tail**, while `engines` covers the 4 engine nacelles (its mesh
+  materials are `dome, engines, glass, landing_gear_door, landing_gears, propeller_cap,
+  propellers, tires, wings`). The repo test renders from 2022 imply the blend once had a
+  separate `body` material that was later merged into `wings`.
+  - `render_boeing_camos.py` (on disk) **tolerates this**: it skips configured camo materials
+    that don't exist (printing `Skipping missing material: 'body'`) and only errors if *none*
+    exist. The documented default CLI therefore works and applies the camo via `wings`.
+  - There is also an **older copy of the script embedded inside `Boeing_E3.blend`** (a Blender
+    Text datablock named `render_boeing_camos`). It still hard-codes `materials["body"]` and so
+    fails with `KeyError: ... key "body" not found` when run from Blender's Text Editor. Prefer
+    the on-disk script. The blend is saved in Blender 3.4 format (`BLENDER-v304`); re-saving it
+    with the VM's Blender 3.6 would bump the format and create a large binary diff, so the
+    embedded copy is intentionally left untouched.
 
 - Renders are saved as **`.png`** (the scene's image format), even though docs/filepaths mention
   `.jpg`. Output defaults to a timestamped folder under `CamoMats/` (e.g. `CamoMats/Rendered_<HHMM>/`).
